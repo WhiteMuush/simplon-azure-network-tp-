@@ -1,129 +1,82 @@
-# TP Pratique â€” Module 4 : RÃ©seau Azure avec az CLI
+# TP Pratique — Module 4 : Réseau Azure avec az CLI
 
-**DurÃ©e estimÃ©e : 30-40 min**
-**PrÃ©requis : az CLI installÃ©, connectÃ© Ã  Azure (`az login`), groupe de ressources existant**
-**Niveau : DÃ©butant â€” avoir fait le TP portail Module 4**
+**Durée estimée : 30-40 min**
+**Prérequis : az CLI installé, connecté à Azure (`az login`), groupe de ressources existant**
+**Niveau : Débutant — avoir fait le TP portail Module 4**
 
 ---
 
-## ðŸŽ¯ ScÃ©nario
+## 🎯 Scénario
 
-L'API d'**AzureTech** tourne en production dans une App Service. Votre Ã©quipe dÃ©cide de la sÃ©curiser en l'isolant dans un rÃ©seau privÃ© Azure avec des rÃ¨gles de filtrage du trafic.
+L'API d'**AzureTech** tourne en production dans une App Service. Votre équipe décide de la sécuriser en l'isolant dans un réseau privé Azure avec des règles de filtrage du trafic.
 
 Architecture cible :
 ```
 Internet
-    â”‚
-    â–¼
-[NSG] â† filtre le trafic (rÃ¨gles HTTP/HTTPS uniquement)
-    â”‚
+    │
+    ▼
+[NSG] ← filtre le trafic (règles HTTP/HTTPS uniquement)
+    │
 [VNet 10.0.0.0/16]
-    â”œâ”€â”€ subnet-frontend  10.0.1.0/24  â†’ App Service / Container
-    â””â”€â”€ subnet-backend   10.0.2.0/24  â†’ Base de donnÃ©es (usage futur)
+    ├── subnet-frontend  10.0.1.0/24  → App Service / Container
+    └── subnet-backend   10.0.2.0/24  → Base de données (usage futur)
 ```
 
-Vous allez crÃ©er cette architecture avec `az CLI` â€” reproductible, versionnable, intÃ©grable dans un pipeline.
+Vous allez créer cette architecture avec `az CLI` — reproductible, versionnable, intégrable dans un pipeline.
 
-> ðŸ’¡ **Pourquoi CLI plutÃ´t que portail ?**
-> Un VNet crÃ©Ã© dans le portail n'est pas documentÃ©, pas reproductible, pas auditable. Avec le CLI, les commandes peuvent Ãªtre commitÃ©es dans Git et rÃ©-exÃ©cutÃ©es identiquement en staging et en production.
+> 💡 **Pourquoi CLI plutôt que portail ?**
+> Un VNet créé dans le portail n'est pas documenté, pas reproductible, pas auditable. Avec le CLI, les commandes peuvent être commitées dans Git et ré-exécutées identiquement en staging et en production.
 
 ---
 
-## Variables â€” Ã  dÃ©finir avant de commencer
+## Variables — à définir avant de commencer
 
-```bash
-export OWNER="prenom-nom"            # votre prÃ©nom-nom (minuscules, sans espaces)
-export RG="rg-${OWNER}"              # resource group fourni par le formateur
-export LOCATION="francecentral"
-
-# Tags appliquÃ©s Ã  toutes les ressources (cleanup du vendredi)
-export TAGS="managed_by=cli environment=tp owner=${OWNER}"
-
-# Noms des ressources rÃ©seau
-export VNET_NAME="vnet-${OWNER}-cli"
-export NSG_NAME="nsg-frontend-${OWNER}-cli"
-
-echo "OWNER     = $OWNER"
-echo "VNET_NAME = $VNET_NAME"
-echo "NSG_NAME  = $NSG_NAME"
-```
+> 📝 **À faire :** définissez et exportez vos variables d'environnement (`OWNER`, `RG`, `LOCATION`, `TAGS`, `VNET_NAME`, `NSG_NAME`) avant de commencer.
 
 ---
 
-## Partie 1 â€” CrÃ©er le rÃ©seau virtuel (VNet) (8 min)
+## Partie 1 — Créer le réseau virtuel (VNet) (8 min)
 
-### 1.1 CrÃ©er le VNet
+### 1.1 Créer le VNet
 
-> ðŸ§  **Pourquoi ?** Un **VNet (Virtual Network)** est votre rÃ©seau privÃ© dans Azure â€” Ã©quivalent Ã  un rÃ©seau local dans un datacenter physique. Les ressources Ã  l'intÃ©rieur peuvent communiquer entre elles. Les ressources Ã  l'extÃ©rieur (Internet) ne peuvent pas y accÃ©der directement sans rÃ¨gles explicites. On le crÃ©e en premier car les sous-rÃ©seaux et les NSG en dÃ©pendent.
+> 🧠 **Pourquoi ?** Un **VNet (Virtual Network)** est votre réseau privé dans Azure — équivalent à un réseau local dans un datacenter physique. Les ressources à l'intérieur peuvent communiquer entre elles. Les ressources à l'extérieur (Internet) ne peuvent pas y accéder directement sans règles explicites. On le crée en premier car les sous-réseaux et les NSG en dépendent.
 
-```bash
-az network vnet create \
-  --name           "$VNET_NAME" \
-  --resource-group "$RG" \
-  --location       "$LOCATION" \
-  --address-prefix "10.0.0.0/16" \
-  --tags           $TAGS
-```
-
-**DÃ©cryptage :**
+**Décryptage :**
 - `--address-prefix 10.0.0.0/16` : espace d'adressage total du VNet
-  - `/16` = 65 536 adresses IP disponibles pour tous les sous-rÃ©seaux
-  - C'est la "boÃ®te" â€” les sous-rÃ©seaux sont des compartiments Ã  l'intÃ©rieur
+  - `/16` = 65 536 adresses IP disponibles pour tous les sous-réseaux
+  - C'est la "boîte" — les sous-réseaux sont des compartiments à l'intérieur
 
 ---
 
-### 1.2 CrÃ©er le sous-rÃ©seau frontend
+### 1.2 Créer le sous-réseau frontend
 
-> ðŸ§  **Pourquoi ?** Les sous-rÃ©seaux permettent de **segmenter** le rÃ©seau par couche applicative. Le subnet-frontend hÃ©berge les ressources exposÃ©es vers Internet (App Service, ACI), le subnet-backend hÃ©berge les ressources internes (bases de donnÃ©es). Cette sÃ©paration permet d'appliquer des rÃ¨gles de sÃ©curitÃ© diffÃ©rentes Ã  chaque couche.
+> 🧠 **Pourquoi ?** Les sous-réseaux permettent de **segmenter** le réseau par couche applicative. Le subnet-frontend héberge les ressources exposées vers Internet (App Service, ACI), le subnet-backend héberge les ressources internes (bases de données). Cette séparation permet d'appliquer des règles de sécurité différentes à chaque couche.
 
-```bash
-az network vnet subnet create \
-  --name           "subnet-frontend" \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --address-prefix "10.0.1.0/24"
-```
+**Décryptage :**
+- `/24` = 256 adresses, dont 5 réservées par Azure = **251 adresses utilisables**
+- Les 5 réservées : adresse réseau, gateway Azure, DNS Azure x2, broadcast
 
-**DÃ©cryptage :**
-- `/24` = 256 adresses, dont 5 rÃ©servÃ©es par Azure = **251 adresses utilisables**
-- Les 5 rÃ©servÃ©es : adresse rÃ©seau, gateway Azure, DNS Azure x2, broadcast
-
-> â“ **Question :** Vous avez 251 adresses utilisables dans subnet-frontend. Si vous utilisez App Service VNet Integration, Azure rÃ©serve un bloc `/28` minimum par plan App Service. Combien de plans App Service maximum pouvez-vous intÃ©grer dans ce sous-rÃ©seau ?
+> ❓ **Question :** Vous avez 251 adresses utilisables dans subnet-frontend. Si vous utilisez App Service VNet Integration, Azure réserve un bloc `/28` minimum par plan App Service. Combien de plans App Service maximum pouvez-vous intégrer dans ce sous-réseau ?
 
 <details>
-<summary>ðŸ’¡ Correction</summary>
+<summary>💡 Correction</summary>
 
-Un bloc `/28` = 16 adresses (dont 5 rÃ©servÃ©es par Azure) = **11 adresses utilisables** par plan.
+Un bloc `/28` = 16 adresses (dont 5 réservées par Azure) = **11 adresses utilisables** par plan.
 
 Avec 251 adresses disponibles dans un `/24` :
-`251 Ã· 16 â‰ˆ 15 plans App Service maximum`
+`251 ÷ 16 ≈ 15 plans App Service maximum`
 
-En pratique, on rÃ©serve de la marge pour la croissance, donc on ne remplirait pas Ã  100%. Si l'application est amenÃ©e Ã  scaler massivement, on prÃ©fÃ©rerait un subnet `/23` (512 adresses) ou `/22` (1024 adresses).
+En pratique, on réserve de la marge pour la croissance, donc on ne remplirait pas à 100%. Si l'application est amenée à scaler massivement, on préférerait un subnet `/23` (512 adresses) ou `/22` (1024 adresses).
 
 </details>
 
 ---
 
-### 1.3 CrÃ©er le sous-rÃ©seau backend
+### 1.3 Créer le sous-réseau backend
 
-```bash
-az network vnet subnet create \
-  --name           "subnet-backend" \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --address-prefix "10.0.2.0/24"
-```
+**Vérifier les deux sous-réseaux :**
 
-**VÃ©rifier les deux sous-rÃ©seaux :**
-```bash
-az network vnet subnet list \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --query          "[].{Nom:name, Plage:addressPrefix, Statut:provisioningState}" \
-  --output         table
-```
-
-RÃ©sultat attendu :
+Résultat attendu :
 ```
 Nom               Plage          Statut
 ----------------  -------------  ---------
@@ -133,49 +86,25 @@ subnet-backend    10.0.2.0/24    Succeeded
 
 ---
 
-### 1.4 Explorer le VNet crÃ©Ã©
-
-```bash
-az network vnet show \
-  --name           "$VNET_NAME" \
-  --resource-group "$RG" \
-  --query          "{nom:name, adresses:addressSpace.addressPrefixes, subnets:subnets[].name}" \
-  --output         json
-```
+### 1.4 Explorer le VNet créé
 
 ---
 
-## Partie 2 â€” CrÃ©er le groupe de sÃ©curitÃ© rÃ©seau (NSG) (10 min)
+## Partie 2 — Créer le groupe de sécurité réseau (NSG) (10 min)
 
-Un **NSG** est un pare-feu logiciel : il filtre le trafic entrant et sortant via des rÃ¨gles de prioritÃ©. **Plus le numÃ©ro de prioritÃ© est bas, plus la rÃ¨gle est appliquÃ©e en premier.**
+Un **NSG** est un pare-feu logiciel : il filtre le trafic entrant et sortant via des règles de priorité. **Plus le numéro de priorité est bas, plus la règle est appliquée en premier.**
 
-### 2.1 CrÃ©er le NSG
+### 2.1 Créer le NSG
 
-> ðŸ§  **Pourquoi ?** Le NSG est dissociÃ© du VNet par design â€” on peut crÃ©er plusieurs NSGs avec des rÃ¨gles diffÃ©rentes et les attacher Ã  des subnets ou des NICs diffÃ©rents. On le crÃ©e d'abord vide, puis on ajoute les rÃ¨gles une par une pour pouvoir les comprendre individuellement.
-
-```bash
-az network nsg create \
-  --name           "$NSG_NAME" \
-  --resource-group "$RG" \
-  --location       "$LOCATION" \
-  --tags           $TAGS
-```
+> 🧠 **Pourquoi ?** Le NSG est dissocié du VNet par design — on peut créer plusieurs NSGs avec des règles différentes et les attacher à des subnets ou des NICs différents. On le crée d'abord vide, puis on ajoute les règles une par une pour pouvoir les comprendre individuellement.
 
 ---
 
-### 2.2 Observer les rÃ¨gles par dÃ©faut
+### 2.2 Observer les règles par défaut
 
-> ðŸ§  **Pourquoi ?** Azure crÃ©e automatiquement 6 rÃ¨gles qu'on ne peut pas modifier ni supprimer. Il est essentiel de les comprendre avant d'ajouter vos propres rÃ¨gles â€” certaines interactions ne sont pas intuitives.
+> 🧠 **Pourquoi ?** Azure crée automatiquement 6 règles qu'on ne peut pas modifier ni supprimer. Il est essentiel de les comprendre avant d'ajouter vos propres règles — certaines interactions ne sont pas intuitives.
 
-```bash
-az network nsg show \
-  --name           "$NSG_NAME" \
-  --resource-group "$RG" \
-  --query          "defaultSecurityRules[].{Nom:name, Priorite:priority, Direction:direction, Action:access, Port:destinationPortRange}" \
-  --output         table
-```
-
-RÃ©sultat attendu :
+Résultat attendu :
 ```
 Nom                              Priorite  Direction  Action  Port
 -------------------------------  --------  ---------  ------  -----
@@ -187,107 +116,45 @@ AllowInternetOutBound            65001     Outbound   Allow   *
 DenyAllOutBound                  65500     Outbound   Deny    *
 ```
 
-> â“ **Questions :**
-> 1. Quelle rÃ¨gle bloque tout le trafic entrant depuis Internet par dÃ©faut ? Quel est son numÃ©ro de prioritÃ© ?
-> 2. Pourquoi `AllowVnetInBound` a-t-elle la prioritÃ© 65000 et `DenyAllInBound` la prioritÃ© 65500 ?
-> 3. Si vous crÃ©ez une rÃ¨gle avec la prioritÃ© 100, sera-t-elle appliquÃ©e avant ou aprÃ¨s `AllowVnetInBound` ?
+> ❓ **Questions :**
+> 1. Quelle règle bloque tout le trafic entrant depuis Internet par défaut ? Quel est son numéro de priorité ?
+> 2. Pourquoi `AllowVnetInBound` a-t-elle la priorité 65000 et `DenyAllInBound` la priorité 65500 ?
+> 3. Si vous créez une règle avec la priorité 100, sera-t-elle appliquée avant ou après `AllowVnetInBound` ?
 
 <details>
-<summary>ðŸ’¡ Correction</summary>
+<summary>💡 Correction</summary>
 
-**1.** La rÃ¨gle `DenyAllInBound` (prioritÃ© 65500) bloque tout le trafic entrant qui n'a pas Ã©tÃ© explicitement autorisÃ© par une rÃ¨gle de prioritÃ© infÃ©rieure. Internet n'est pas dans `AllowVnetInBound` (qui couvre seulement l'espace d'adressage du VNet).
+**1.** La règle `DenyAllInBound` (priorité 65500) bloque tout le trafic entrant qui n'a pas été explicitement autorisé par une règle de priorité inférieure. Internet n'est pas dans `AllowVnetInBound` (qui couvre seulement l'espace d'adressage du VNet).
 
-**2.** Les prioritÃ©s fonctionnent du plus petit au plus grand. Azure Ã©value d'abord la prioritÃ© 65000 (`AllowVnetInBound`), puis 65001, puis 65500 (`DenyAllInBound`). Un paquet venant du VNet matche `AllowVnetInBound` et est autorisÃ© â€” `DenyAllInBound` n'est jamais atteint pour ce paquet. Un paquet venant d'Internet ne matche aucune rÃ¨gle avant 65500, donc il est bloquÃ©.
+**2.** Les priorités fonctionnent du plus petit au plus grand. Azure évalue d'abord la priorité 65000 (`AllowVnetInBound`), puis 65001, puis 65500 (`DenyAllInBound`). Un paquet venant du VNet matche `AllowVnetInBound` et est autorisé — `DenyAllInBound` n'est jamais atteint pour ce paquet. Un paquet venant d'Internet ne matche aucune règle avant 65500, donc il est bloqué.
 
-**3.** Votre rÃ¨gle prioritÃ© 100 est Ã©valuÃ©e **avant** `AllowVnetInBound` (65000). Si votre rÃ¨gle autorise le port 80 depuis partout, un paquet HTTP venant d'Internet matchera votre rÃ¨gle 100 et sera autorisÃ© â€” sans jamais atteindre `DenyAllInBound`.
+**3.** Votre règle priorité 100 est évaluée **avant** `AllowVnetInBound` (65000). Si votre règle autorise le port 80 depuis partout, un paquet HTTP venant d'Internet matchera votre règle 100 et sera autorisé — sans jamais atteindre `DenyAllInBound`.
 
 </details>
 
 ---
 
-### 2.3 Ajouter une rÃ¨gle pour autoriser HTTP (port 80)
+### 2.3 Ajouter une règle pour autoriser HTTP (port 80)
 
-> ðŸ§  **Pourquoi ?** Sans cette rÃ¨gle, tout le trafic HTTP venant d'Internet serait bloquÃ© par `DenyAllInBound`. On l'ajoute avec la prioritÃ© 100 pour qu'elle soit Ã©valuÃ©e avant les rÃ¨gles par dÃ©faut d'Azure (toutes Ã  65000+).
-
-```bash
-az network nsg rule create \
-  --name                   "Allow-HTTP" \
-  --nsg-name               "$NSG_NAME" \
-  --resource-group         "$RG" \
-  --priority               100 \
-  --direction              Inbound \
-  --access                 Allow \
-  --protocol               Tcp \
-  --source-address-prefix  "*" \
-  --source-port-range      "*" \
-  --destination-address-prefix "*" \
-  --destination-port-range "80" \
-  --description            "Autoriser le trafic HTTP entrant"
-```
-
-**DÃ©cryptage des paramÃ¨tres :**
-- `--priority 100` : s'applique avant les rÃ¨gles par dÃ©faut (65000+)
-- `--direction Inbound` : filtre le trafic **entrant** vers les ressources du subnet
-- `--source-address-prefix "*"` : depuis n'importe quelle adresse IP
-- `--destination-port-range "80"` : uniquement le port HTTP
+> 🧠 **Pourquoi ?** Sans cette règle, tout le trafic HTTP venant d'Internet serait bloqué par `DenyAllInBound`. On l'ajoute avec la priorité 100 pour qu'elle soit évaluée avant les règles par défaut d'Azure (toutes à 65000+).
 
 ---
 
-### 2.4 Ajouter une rÃ¨gle pour autoriser HTTPS (port 443)
+### 2.4 Ajouter une règle pour autoriser HTTPS (port 443)
 
-```bash
-az network nsg rule create \
-  --name                   "Allow-HTTPS" \
-  --nsg-name               "$NSG_NAME" \
-  --resource-group         "$RG" \
-  --priority               110 \
-  --direction              Inbound \
-  --access                 Allow \
-  --protocol               Tcp \
-  --source-address-prefix  "*" \
-  --source-port-range      "*" \
-  --destination-address-prefix "*" \
-  --destination-port-range "443" \
-  --description            "Autoriser le trafic HTTPS entrant"
-```
-
-> ðŸ§  **Pourquoi 110 et pas 101 ?** On laisse des espaces entre les prioritÃ©s (100, 110, 120â€¦) pour pouvoir insÃ©rer des rÃ¨gles entre deux existantes sans tout renumÃ©roter. Une rÃ¨gle prioritÃ© 105 pourrait Ãªtre insÃ©rÃ©e entre HTTP et HTTPS si besoin.
+> 🧠 **Pourquoi 110 et pas 101 ?** On laisse des espaces entre les priorités (100, 110, 120…) pour pouvoir insérer des règles entre deux existantes sans tout renuméroter. Une règle priorité 105 pourrait être insérée entre HTTP et HTTPS si besoin.
 
 ---
 
-### 2.5 Ajouter une rÃ¨gle pour bloquer tout autre trafic entrant
+### 2.5 Ajouter une règle pour bloquer tout autre trafic entrant
 
-```bash
-az network nsg rule create \
-  --name                   "Deny-All-Inbound" \
-  --nsg-name               "$NSG_NAME" \
-  --resource-group         "$RG" \
-  --priority               4000 \
-  --direction              Inbound \
-  --access                 Deny \
-  --protocol               "*" \
-  --source-address-prefix  "*" \
-  --source-port-range      "*" \
-  --destination-address-prefix "*" \
-  --destination-port-range "*" \
-  --description            "Bloquer tout autre trafic entrant"
-```
-
-> ðŸ’¡ Cette rÃ¨gle est redondante avec `DenyAllInBound` (prioritÃ© 65500) mais elle la rend **explicite** dans vos rÃ¨gles personnalisÃ©es â€” bonne pratique en sÃ©curitÃ© pour que l'intention soit visible sans avoir Ã  regarder les rÃ¨gles par dÃ©faut.
+> 💡 Cette règle est redondante avec `DenyAllInBound` (priorité 65500) mais elle la rend **explicite** dans vos règles personnalisées — bonne pratique en sécurité pour que l'intention soit visible sans avoir à regarder les règles par défaut.
 
 ---
 
-### 2.6 VÃ©rifier toutes vos rÃ¨gles personnalisÃ©es
+### 2.6 Vérifier toutes vos règles personnalisées
 
-```bash
-az network nsg rule list \
-  --nsg-name       "$NSG_NAME" \
-  --resource-group "$RG" \
-  --query          "[].{Nom:name, Priorite:priority, Direction:direction, Action:access, Port:destinationPortRange}" \
-  --output         table
-```
-
-RÃ©sultat attendu :
+Résultat attendu :
 ```
 Nom               Priorite  Direction  Action  Port
 ----------------  --------  ---------  ------  -----
@@ -296,297 +163,119 @@ Allow-HTTPS       110       Inbound    Allow   443
 Deny-All-Inbound  4000      Inbound    Deny    *
 ```
 
-> â“ **Question :** Un paquet arrive sur le port 22 (SSH) depuis Internet. Dans quel ordre les rÃ¨gles sont-elles Ã©valuÃ©es et quelle est la dÃ©cision finale ?
+> ❓ **Question :** Un paquet arrive sur le port 22 (SSH) depuis Internet. Dans quel ordre les règles sont-elles évaluées et quelle est la décision finale ?
 
 <details>
-<summary>ðŸ’¡ Correction</summary>
+<summary>💡 Correction</summary>
 
-Ordre d'Ã©valuation pour un paquet SSH (port 22) entrant depuis Internet :
+Ordre d'évaluation pour un paquet SSH (port 22) entrant depuis Internet :
 
-1. **Allow-HTTP (prioritÃ© 100)** â†’ port 80 seulement â†’ âŒ ne matche pas
-2. **Allow-HTTPS (prioritÃ© 110)** â†’ port 443 seulement â†’ âŒ ne matche pas
-3. **Deny-All-Inbound (prioritÃ© 4000)** â†’ port `*` â†’ âœ… matche â†’ **DENY**
+1. **Allow-HTTP (priorité 100)** → port 80 seulement → ❌ ne matche pas
+2. **Allow-HTTPS (priorité 110)** → port 443 seulement → ❌ ne matche pas
+3. **Deny-All-Inbound (priorité 4000)** → port `*` → ✅ matche → **DENY**
 
-Le paquet est bloquÃ© Ã  la rÃ¨gle 4000. Les rÃ¨gles par dÃ©faut Azure (65000+) ne sont jamais atteintes car la rÃ¨gle 4000 a dÃ©jÃ  pris une dÃ©cision.
+Le paquet est bloqué à la règle 4000. Les règles par défaut Azure (65000+) ne sont jamais atteintes car la règle 4000 a déjà pris une décision.
 
-C'est exactement le but : seuls les ports 80 et 443 passent, tout le reste est refusÃ© explicitement.
+C'est exactement le but : seuls les ports 80 et 443 passent, tout le reste est refusé explicitement.
 
 </details>
 
 ---
 
-## Partie 3 â€” Associer le NSG au sous-rÃ©seau frontend (5 min)
+## Partie 3 — Associer le NSG au sous-réseau frontend (5 min)
 
-> ðŸ§  **Pourquoi ?** Un NSG crÃ©Ã© mais non associÃ© **n'a aucun effet** â€” c'est un rÃ¨glement qui n'est appliquÃ© nulle part. L'association NSG â†’ subnet signifie que toutes les ressources qui rejoignent ce subnet seront soumises aux rÃ¨gles du NSG, automatiquement.
+> 🧠 **Pourquoi ?** Un NSG créé mais non associé **n'a aucun effet** — c'est un règlement qui n'est appliqué nulle part. L'association NSG → subnet signifie que toutes les ressources qui rejoignent ce subnet seront soumises aux règles du NSG, automatiquement.
 
-### 3.1 Associer le NSG Ã  subnet-frontend
-
-```bash
-az network vnet subnet update \
-  --name           "subnet-frontend" \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --network-security-group "$NSG_NAME"
-```
+### 3.1 Associer le NSG à subnet-frontend
 
 ---
 
-### 3.2 VÃ©rifier l'association
-
-```bash
-az network vnet subnet show \
-  --name           "subnet-frontend" \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --query          "{Subnet:name, NSG:networkSecurityGroup.id}" \
-  --output         json
-```
+### 3.2 Vérifier l'association
 
 Vous devriez voir l'ID du NSG dans le champ `NSG`.
 
 ---
 
-### 3.3 Comparer les deux sous-rÃ©seaux
-
-```bash
-az network vnet subnet list \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --query          "[].{Nom:name, Plage:addressPrefix, NSG:networkSecurityGroup.id}" \
-  --output         table
-```
+### 3.3 Comparer les deux sous-réseaux
 
 | Subnet | Plage | NSG |
 |--------|-------|-----|
-| subnet-frontend | 10.0.1.0/24 | nsg-frontend-... (protÃ©gÃ©) |
-| subnet-backend | 10.0.2.0/24 | null (non protÃ©gÃ© pour l'instant) |
+| subnet-frontend | 10.0.1.0/24 | nsg-frontend-... (protégé) |
+| subnet-backend | 10.0.2.0/24 | null (non protégé pour l'instant) |
 
-> â“ **Question :** `subnet-backend` n'a pas de NSG. Dans une architecture rÃ©elle, quelles rÃ¨gles mettriez-vous sur un NSG backend pour n'autoriser que le trafic venant du frontend (et bloquer Internet directement) ?
+> ❓ **Question :** `subnet-backend` n'a pas de NSG. Dans une architecture réelle, quelles règles mettriez-vous sur un NSG backend pour n'autoriser que le trafic venant du frontend (et bloquer Internet directement) ?
 
 <details>
-<summary>ðŸ’¡ Correction</summary>
+<summary>💡 Correction</summary>
 
-Un NSG backend restrictif suivrait ce modÃ¨le :
+Un NSG backend restrictif suivrait ce modèle :
 
-| RÃ¨gle | PrioritÃ© | Source | Port | Action |
+| Règle | Priorité | Source | Port | Action |
 |-------|----------|--------|------|--------|
 | Allow-From-Frontend | 100 | 10.0.1.0/24 | 5432 (PostgreSQL) | Allow |
 | Allow-From-Frontend-App | 110 | 10.0.1.0/24 | 3306 (MySQL) | Allow |
 | Deny-Internet-Direct | 200 | Internet | * | Deny |
 | Deny-All | 4000 | * | * | Deny |
 
-L'idÃ©e clÃ© : utiliser l'**adresse du subnet-frontend** (`10.0.1.0/24`) comme source autorisÃ©e, plutÃ´t que `*`. Ainsi, mÃªme si quelqu'un pÃ©nÃ¨tre dans le rÃ©seau Azure par un autre chemin, il ne peut pas atteindre la base de donnÃ©es directement.
+L'idée clé : utiliser l'**adresse du subnet-frontend** (`10.0.1.0/24`) comme source autorisée, plutôt que `*`. Ainsi, même si quelqu'un pénètre dans le réseau Azure par un autre chemin, il ne peut pas atteindre la base de données directement.
 
-Cette architecture s'appelle **dÃ©fense en profondeur** : chaque couche a ses propres contrÃ´les de sÃ©curitÃ©, indÃ©pendamment des autres.
+Cette architecture s'appelle **défense en profondeur** : chaque couche a ses propres contrôles de sécurité, indépendamment des autres.
 
 </details>
 
 ---
 
-## Partie 4 â€” VÃ©rifier les rÃ¨gles effectives (5 min)
+## Partie 4 — Vérifier les règles effectives (5 min)
 
-> ðŸ§  **Pourquoi ?** Azure combine vos rÃ¨gles personnalisÃ©es avec les rÃ¨gles par dÃ©faut. `list-effective-nsg` montre exactement ce qui sera appliquÃ© sur une interface rÃ©seau â€” utile pour dÃ©boguer un problÃ¨me de connectivitÃ© ("pourquoi mon trafic est-il bloquÃ© ?").
+> 🧠 **Pourquoi ?** Azure combine vos règles personnalisées avec les règles par défaut. `list-effective-nsg` montre exactement ce qui sera appliqué sur une interface réseau — utile pour déboguer un problème de connectivité ("pourquoi mon trafic est-il bloqué ?").
 
-### 4.1 CrÃ©er une interface rÃ©seau de test
+### 4.1 Créer une interface réseau de test
 
-Pour voir les rÃ¨gles effectives, nous avons besoin d'une NIC (Network Interface Card) attachÃ©e au subnet :
+Pour voir les règles effectives, nous avons besoin d'une NIC (Network Interface Card) attachée au subnet :
 
-```bash
-az network nic create \
-  --name           "nic-test-${OWNER}-cli" \
-  --resource-group "$RG" \
-  --location       "$LOCATION" \
-  --vnet-name      "$VNET_NAME" \
-  --subnet         "subnet-frontend" \
-  --tags           $TAGS
-```
+### 4.2 Afficher les règles de sécurité effectives
 
-### 4.2 Afficher les rÃ¨gles de sÃ©curitÃ© effectives
+Vous voyez ici la vue consolidée : vos règles + les règles par défaut Azure, dans l'ordre d'application réel.
 
-```bash
-az network nic list-effective-nsg \
-  --name           "nic-test-${OWNER}-cli" \
-  --resource-group "$RG" \
-  --query          "effectiveNetworkSecurityGroups[0].effectiveSecurityRules[].{Nom:name, Priorite:priority, Direction:direction, Action:access, Port:destinationPortRanges}" \
-  --output         table
-```
-
-Vous voyez ici la vue consolidÃ©e : vos rÃ¨gles + les rÃ¨gles par dÃ©faut Azure, dans l'ordre d'application rÃ©el.
-
-> â“ **Question :** Vous voyez `AllowVnetInBound` (prioritÃ© 65000) dans les rÃ¨gles effectives. Est-ce que cette rÃ¨gle permet Ã  une VM dans `subnet-backend` de contacter une VM dans `subnet-frontend` ? Pourquoi ?
+> ❓ **Question :** Vous voyez `AllowVnetInBound` (priorité 65000) dans les règles effectives. Est-ce que cette règle permet à une VM dans `subnet-backend` de contacter une VM dans `subnet-frontend` ? Pourquoi ?
 
 <details>
-<summary>ðŸ’¡ Correction</summary>
+<summary>💡 Correction</summary>
 
-**Oui**, `AllowVnetInBound` autorise le trafic entre toutes les ressources **du mÃªme VNet** (`10.0.0.0/16`), peu importe le subnet.
+**Oui**, `AllowVnetInBound` autorise le trafic entre toutes les ressources **du même VNet** (`10.0.0.0/16`), peu importe le subnet.
 
-`AllowVnetInBound` a pour source `VirtualNetwork` â€” une balise Azure qui reprÃ©sente l'espace d'adressage complet du VNet (y compris tous ses subnets). Donc une VM dans `subnet-backend` (10.0.2.x) peut contacter une VM dans `subnet-frontend` (10.0.1.x) sans rÃ¨gle supplÃ©mentaire.
+`AllowVnetInBound` a pour source `VirtualNetwork` — une balise Azure qui représente l'espace d'adressage complet du VNet (y compris tous ses subnets). Donc une VM dans `subnet-backend` (10.0.2.x) peut contacter une VM dans `subnet-frontend` (10.0.1.x) sans règle supplémentaire.
 
-C'est pourquoi, si vous voulez **isoler** subnet-backend de subnet-frontend, il faut crÃ©er une rÃ¨gle `Deny` explicite avec prioritÃ© infÃ©rieure Ã  65000 et source `10.0.2.0/24`.
+C'est pourquoi, si vous voulez **isoler** subnet-backend de subnet-frontend, il faut créer une règle `Deny` explicite avec priorité inférieure à 65000 et source `10.0.2.0/24`.
 
 </details>
 
 ---
 
-## Partie 5 â€” IntÃ©gration dans provision.sh
+## Partie 5 — Intégration dans provision.sh
 
-Voici le bloc Ã  ajouter dans votre `provision.sh` aprÃ¨s la crÃ©ation des ressources de calcul :
-
-```bash
-# â”€â”€ RÃ©seau (VNet + NSG) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-echo ""
-echo "â–¶ [8/8] RÃ©seau (VNet + subnets + NSG)..."
-
-az network vnet create \
-  --name           "$VNET_NAME" \
-  --resource-group "$RG" \
-  --location       "$LOCATION" \
-  --address-prefix "10.0.0.0/16" \
-  --tags           $TAGS
-
-az network vnet subnet create \
-  --name "subnet-frontend" --vnet-name "$VNET_NAME" \
-  --resource-group "$RG" --address-prefix "10.0.1.0/24"
-
-az network vnet subnet create \
-  --name "subnet-backend" --vnet-name "$VNET_NAME" \
-  --resource-group "$RG" --address-prefix "10.0.2.0/24"
-
-echo "âœ… VNet crÃ©Ã© : $VNET_NAME (frontend: 10.0.1.0/24 / backend: 10.0.2.0/24)"
-
-az network nsg create \
-  --name "$NSG_NAME" --resource-group "$RG" \
-  --location "$LOCATION" --tags $TAGS
-
-az network nsg rule create \
-  --name "Allow-HTTP" --nsg-name "$NSG_NAME" --resource-group "$RG" \
-  --priority 100 --direction Inbound --access Allow --protocol Tcp \
-  --source-address-prefix "*" --source-port-range "*" \
-  --destination-address-prefix "*" --destination-port-range "80"
-
-az network nsg rule create \
-  --name "Allow-HTTPS" --nsg-name "$NSG_NAME" --resource-group "$RG" \
-  --priority 110 --direction Inbound --access Allow --protocol Tcp \
-  --source-address-prefix "*" --source-port-range "*" \
-  --destination-address-prefix "*" --destination-port-range "443"
-
-az network nsg rule create \
-  --name "Deny-All-Inbound" --nsg-name "$NSG_NAME" --resource-group "$RG" \
-  --priority 4000 --direction Inbound --access Deny --protocol "*" \
-  --source-address-prefix "*" --source-port-range "*" \
-  --destination-address-prefix "*" --destination-port-range "*"
-
-az network vnet subnet update \
-  --name "subnet-frontend" --vnet-name "$VNET_NAME" \
-  --resource-group "$RG" \
-  --network-security-group "$NSG_NAME"
-
-echo "âœ… NSG crÃ©Ã© et associÃ© Ã  subnet-frontend (HTTP:100 / HTTPS:110 / Deny:4000)"
-```
-
-Et dans `destroy.sh`, ajouter **avant** la suppression des resources de calcul (le NSG doit Ãªtre dÃ©sassociÃ© avant suppression) :
-
-```bash
-# â”€â”€ RÃ©seau â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# DÃ©sassocier le NSG du subnet avant suppression (obligatoire)
-if az network vnet subnet show \
-    --name "subnet-frontend" --vnet-name "$VNET_NAME" \
-    --resource-group "$RG" &>/dev/null; then
-  az network vnet subnet update \
-    --name "subnet-frontend" --vnet-name "$VNET_NAME" \
-    --resource-group "$RG" --network-security-group "" 2>/dev/null || true
-fi
-
-if az network nsg show --name "$NSG_NAME" --resource-group "$RG" &>/dev/null; then
-  az network nsg delete --name "$NSG_NAME" --resource-group "$RG"
-  echo "âœ… NSG supprimÃ©"
-fi
-
-# Supprimer la NIC de test puis le VNet
-az network nic delete \
-  --name "nic-test-${OWNER}-cli" --resource-group "$RG" 2>/dev/null || true
-
-if az network vnet show --name "$VNET_NAME" --resource-group "$RG" &>/dev/null; then
-  az network vnet delete --name "$VNET_NAME" --resource-group "$RG"
-  echo "âœ… VNet supprimÃ©"
-fi
-```
+> 📝 **À faire :** reportez vous-même les commandes des Parties 1 à 4 dans `provision.sh` (après les ressources de calcul) et dans `destroy.sh` (avant, le NSG doit être désassocié du subnet avant suppression).
 
 ---
 
-## ðŸ§¹ Nettoyage
-
-```bash
-# DÃ©sassocier le NSG avant suppression
-az network vnet subnet update \
-  --name           "subnet-frontend" \
-  --vnet-name      "$VNET_NAME" \
-  --resource-group "$RG" \
-  --network-security-group "" 2>/dev/null || true
-
-# Supprimer la NIC de test
-az network nic delete \
-  --name           "nic-test-${OWNER}-cli" \
-  --resource-group "$RG" 2>/dev/null || true
-
-# Supprimer le NSG
-az network nsg delete \
-  --name           "$NSG_NAME" \
-  --resource-group "$RG"
-
-# Supprimer le VNet (supprime automatiquement les subnets)
-az network vnet delete \
-  --name           "$VNET_NAME" \
-  --resource-group "$RG"
-
-echo "âœ… Ressources rÃ©seau supprimÃ©es"
-
-# VÃ©rification
-az network vnet list \
-  --resource-group "$RG" \
-  --query          "[].name" \
-  --output         table
-```
+## 🧹 Nettoyage
 
 ---
 
-## âœ… Ce que vous avez appris
+## ✅ Ce que vous avez appris
 
-- CrÃ©er un **VNet** avec un espace d'adressage `/16` et deux sous-rÃ©seaux `/24` avec az CLI
-- Comprendre les **calculs d'adressage** : /24 = 256 adresses âˆ’ 5 rÃ©servÃ©es Azure = 251 utilisables
-- CrÃ©er un **NSG** et ajouter des rÃ¨gles de filtrage avec des prioritÃ©s
-- Comprendre l'**ordre d'Ã©valuation** des rÃ¨gles NSG (prioritÃ© la plus basse = appliquÃ©e en premier)
-- **Associer** un NSG Ã  un sous-rÃ©seau pour protÃ©ger toutes les ressources qui s'y trouvent
-- Voir les **rÃ¨gles effectives** consolidÃ©es sur une interface rÃ©seau
-- IntÃ©grer ces commandes dans un `provision.sh` rÃ©utilisable
-
----
-
-## ðŸ“š Pour aller plus loin
-
-```bash
-# Lister tous les VNets de votre resource group
-az network vnet list --resource-group "$RG" --output table
-
-# Voir les adresses IP utilisÃ©es dans un subnet
-az network vnet subnet show \
-  --name "subnet-frontend" --vnet-name "$VNET_NAME" \
-  --resource-group "$RG" \
-  --query "{ipConfigurations:ipConfigurations[].id}" \
-  --output json
-
-# Ajouter une rÃ¨gle SSH (port 22) â€” Ã  utiliser uniquement en dev depuis votre IP !
-MY_IP=$(curl -s ifconfig.me)
-az network nsg rule create \
-  --name "Allow-SSH-DevOnly" --nsg-name "$NSG_NAME" --resource-group "$RG" \
-  --priority 200 --direction Inbound --access Allow --protocol Tcp \
-  --source-address-prefix "${MY_IP}/32" \
-  --source-port-range "*" \
-  --destination-address-prefix "*" \
-  --destination-port-range "22" \
-  --description "SSH depuis mon IP uniquement â€” Ã  supprimer en production"
-```
+- Créer un **VNet** avec un espace d'adressage `/16` et deux sous-réseaux `/24` avec az CLI
+- Comprendre les **calculs d'adressage** : /24 = 256 adresses − 5 réservées Azure = 251 utilisables
+- Créer un **NSG** et ajouter des règles de filtrage avec des priorités
+- Comprendre l'**ordre d'évaluation** des règles NSG (priorité la plus basse = appliquée en premier)
+- **Associer** un NSG à un sous-réseau pour protéger toutes les ressources qui s'y trouvent
+- Voir les **règles effectives** consolidées sur une interface réseau
+- Intégrer ces commandes dans un `provision.sh` réutilisable
 
 ---
 
-*Formation DevSecOps Azure â€” Simplon*
+## 📚 Pour aller plus loin
+
+---
+
+*Formation DevSecOps Azure — Simplon*
