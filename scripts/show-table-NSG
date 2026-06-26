@@ -4,5 +4,7 @@
 set -a; source "$(dirname "$0")/.env"; set +a
 
 az network nsg show \
-    --resource-group $RG \
-    --name $NSG_NAME \
+    --resource-group "$RG" \
+    --name "$NSG_NAME" \
+    --query "defaultSecurityRules[].{Nom:name, Priorite:priority, Direction:direction, Action:access, Port:destinationPortRange}" \
+    --output table
