@@ -1,0 +1,17 @@
+# Secrets / config locale
+.env
+*.env
+!*.env.example
+scripts/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
